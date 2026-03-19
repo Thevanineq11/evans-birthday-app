@@ -7,20 +7,21 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
 
 <style>
-body { font-family: Arial; background: #0f172a; color: white; padding: 20px; }
-h1 { color: #38bdf8; }
-.bracket { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
-.matchup { background: #1e293b; padding: 10px; border-radius: 10px; }
-.team { padding: 5px; cursor: pointer; }
-.team:hover { background: #334155; }
-.selected { background: #22c55e; }
-.scoreboard { margin-top: 30px; background: #1e293b; padding: 15px; border-radius: 10px; }
-.turn { margin-bottom: 10px; color: #facc15; }
+body { font-family: Arial; background:#0f172a; color:white; padding:20px; }
+h1 { color:#38bdf8; }
+
+.bracket { display:grid; grid-template-columns: repeat(4, 1fr); gap:20px; }
+.round { display:flex; flex-direction:column; gap:15px; }
+.matchup { background:#1e293b; padding:10px; border-radius:10px; }
+.team { padding:5px; cursor:pointer; }
+.team:hover { background:#334155; }
+.selected { background:#22c55e; }
+.scoreboard { margin-top:30px; background:#1e293b; padding:15px; border-radius:10px; }
+.turn { margin-bottom:10px; color:#facc15; }
 </style>
 </head>
 
 <body>
-
 <h1>🏀 March Madness Multiplayer Pick’em</h1>
 
 <input id="name" placeholder="Enter your name">
@@ -36,128 +37,118 @@ h1 { color: #38bdf8; }
 </div>
 
 <script>
-// 1️⃣ Initialize Supabase
+// --- SUPABASE CONFIG ---
 const SUPABASE_URL = "https://nxkchposugwdluzzdqix.supabase.co";
 const SUPABASE_KEY = "sb_publishable_TIr37sPlGAtqiCgtw4rdvA_jve-ECLl";
 const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Players
-const players = ["Evan","Maddie","Beto","Luke","Scott","Andy","West"];
+// --- GAME STATE ---
+const players = ["Evan","Beto","Maddie","Scott","Luke","Andy","West"];
 let player = null;
+let currentTurn = 0;
 
-// Join game
-function join() {
-    player = document.getElementById("name").value;
-    if (!player) alert("Enter your name!");
-    else alert("Joined as " + player);
+// --- JOIN GAME ---
+async function join() {
+    player = document.getElementById("name").value.trim();
+    if (!player) { alert("Enter your name!"); return; }
+    if (!players.includes(player)) { alert("Name not in allowed list!"); return; }
+
+    alert("Joined as " + player);
+    renderTurn();
 }
 
-// Load bracket games
+// --- LOAD GAMES ---
 async function loadGames() {
-    let { data: games } = await supabase
-        .from("games")
-        .select("*");
+    const { data: games } = await supabase.from("games").select("*");
 
-    render(games);
+    renderBracket(games);
     calculateScores(games);
 }
 
-// Render bracket
-function render(games) {
-    document.getElementById("bracket").innerHTML = "";
+// --- RENDER BRACKET ---
+async function renderBracket(games) {
+    const bracketDiv = document.getElementById("bracket");
+    bracketDiv.innerHTML = "";
+
+    const { data: picksData } = await supabase.from("picks").select("*");
+    const picksMap = {};
+    picksData.forEach(p => picksMap[p.game_id] = p);
+
     games.forEach(g => {
         const div = document.createElement("div");
         div.className = "matchup";
 
-        supabase
-          .from("picks")
-          .select("*")
-          .eq("game_id", g.id)
-          .then(({data}) => {
-
-        const pick = data.length ? data[0].pick : "";
+        const pick = picksMap[g.id]?.pick || "";
 
         div.innerHTML = `
             <h4>${g.team1} vs ${g.team2}</h4>
-            <div class="team ${pick === g.team1 ? "selected" : ""}"
-                onclick="makePick('${g.id}','${g.team1}')">${g.team1} (${g.score1})</div>
-
-            <div class="team ${pick === g.team2 ? "selected" : ""}"
-                onclick="makePick('${g.id}','${g.team2}')">${g.team2} (${g.score2})</div>
+            <div class="team ${pick===g.team1?'selected':''}" onclick="makePick('${g.id}','${g.team1}')">
+                ${g.team1} (${g.score1})
+            </div>
+            <div class="team ${pick===g.team2?'selected':''}" onclick="makePick('${g.id}','${g.team2}')">
+                ${g.team2} (${g.score2})
+            </div>
         `;
 
-        document.getElementById("bracket").appendChild(div);
-        });
+        bracketDiv.appendChild(div);
     });
 
     renderTurn();
 }
 
-// Handle pick
+// --- PICK FUNCTION ---
 async function makePick(gameId, team) {
     if (!player) { alert("Join first!"); return; }
 
-    let { data } = await supabase
-        .from("picks")
-        .select("*")
-        .eq("game_id", gameId);
+    // Check turn
+    const { data: turnData } = await supabase.from("turn").select("*").eq("id",1).single();
+    if (players[turnData.index] !== player) { alert("Not your turn!"); return; }
 
-    if (data.length) {
-        // If already picked, do nothing
-        return;
-    }
+    // Check if already picked
+    const { data: existingPick } = await supabase.from("picks").select("*").eq("game_id", gameId);
+    if (existingPick.length) return;
 
-    await supabase
-        .from("picks")
-        .insert([{ game_id: gameId, player: player, pick: team }]);
+    // Save pick
+    await supabase.from("picks").insert([{ game_id: gameId, player: player, pick: team }]);
 
-    nextTurn();
+    // Advance turn
+    const nextIndex = (turnData.index + 1) % players.length;
+    await supabase.from("turn").update({ index: nextIndex }).eq("id",1);
+
     loadGames();
 }
 
-// Scoreboard
-async function calculateScores(games) {
-    let scores = {};
-    players.forEach(p => scores[p] = 0);
+// --- RENDER CURRENT TURN ---
+async function renderTurn() {
+    const { data: turnData } = await supabase.from("turn").select("*").eq("id",1).single();
+    currentTurn = turnData.index;
+    document.getElementById("turn").innerText = "Current Turn: " + players[currentTurn];
+}
 
-    let { data: picks } = await supabase.from("picks").select("*");
+// --- CALCULATE SCORES ---
+async function calculateScores(games) {
+    const scores = {};
+    players.forEach(p=>scores[p]=0);
+
+    const { data: picksData } = await supabase.from("picks").select("*");
 
     games.forEach(g => {
         const winner = g.score1>g.score2 ? g.team1 : g.team2;
-        picks.forEach(p => {
-            if (p.pick === winner) scores[p.player]++;
-        });
+        picksData.forEach(p => { if(p.pick===winner) scores[p.player]++; });
     });
 
-    const scoreDiv = document.getElementById("scores");
-    scoreDiv.innerHTML = "";
-    players.forEach(p => {
-        scoreDiv.innerHTML += `<p>${p}: ${scores[p]}</p>`;
-    });
+    const div = document.getElementById("scores");
+    div.innerHTML = "";
+    players.forEach(p => div.innerHTML += `<p>${p}: ${scores[p]}</p>`);
 }
 
-// Turn indicator
-async function renderTurn() {
-    let { data } = await supabase
-        .from("turn")
-        .select("*")
-        .single();
+// --- REAL-TIME UPDATES ---
+supabase.from("picks").on("INSERT", payload => loadGames()).subscribe();
+supabase.from("turn").on("UPDATE", payload => renderTurn()).subscribe();
+supabase.from("games").on("UPDATE", payload => loadGames()).subscribe();
 
-    document.getElementById("turn").innerText =
-        "Current Turn: " + players[data.index];
-}
-
-// Next Turn
-async function nextTurn() {
-    let { data } = await supabase.from("turn").select("*").single();
-    let next = (data.index + 1) % players.length;
-    await supabase.from("turn").update({ index: next }).eq("id", data.id);
-}
-
-// Auto refresh
-setInterval(loadGames, 30000);
+// --- INIT ---
 loadGames();
 </script>
-
 </body>
 </html>
